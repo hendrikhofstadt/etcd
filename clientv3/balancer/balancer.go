@@ -103,6 +103,10 @@ func (b *builder) Build(cc balancer.ClientConn, opt balancer.BuildOptions) balan
 	return bb
 }
 
+func (bb *baseBalancer) ResolverError(err error) {
+	bb.lg.Warn("ResolverError called with error", zap.String("balancer-id", bb.id), zap.Error(err))
+}
+
 // Name implements "grpc/balancer.Builder" interface.
 func (b *builder) Name() string { return b.cfg.Name }
 
@@ -140,11 +144,8 @@ type baseBalancer struct {
 
 // HandleResolvedAddrs implements "grpc/balancer.Balancer" interface.
 // gRPC sends initial or updated resolved addresses from "Build".
-func (bb *baseBalancer) HandleResolvedAddrs(addrs []resolver.Address, err error) {
-	if err != nil {
-		bb.lg.Warn("HandleResolvedAddrs called with error", zap.String("balancer-id", bb.id), zap.Error(err))
-		return
-	}
+func (bb *baseBalancer) UpdateClientConnState(state balancer.ClientConnState) error {
+	addrs := state.ResolverState.Addresses
 	bb.lg.Info("resolved",
 		zap.String("picker", bb.picker.String()),
 		zap.String("balancer-id", bb.id),
@@ -191,12 +192,16 @@ func (bb *baseBalancer) HandleResolvedAddrs(addrs []resolver.Address, err error)
 			// (DO NOT) delete(bb.scToSt, sc)
 		}
 	}
+
+	return nil
 }
 
 // HandleSubConnStateChange implements "grpc/balancer.Balancer" interface.
-func (bb *baseBalancer) HandleSubConnStateChange(sc balancer.SubConn, s grpcconnectivity.State) {
+func (bb *baseBalancer) UpdateSubConnState(sc balancer.SubConn, state balancer.SubConnState) {
 	bb.mu.Lock()
 	defer bb.mu.Unlock()
+
+	s := state.ConnectivityState
 
 	old, ok := bb.scToSt[sc]
 	if !ok {
@@ -247,7 +252,10 @@ func (bb *baseBalancer) HandleSubConnStateChange(sc balancer.SubConn, s grpcconn
 		bb.updatePicker()
 	}
 
-	bb.currentConn.UpdateBalancerState(bb.connectivityRecorder.GetCurrentState(), bb.picker)
+	bb.currentConn.UpdateState(balancer.State{
+		ConnectivityState: bb.connectivityRecorder.GetCurrentState(),
+		Picker:            bb.picker,
+	})
 }
 
 func (bb *baseBalancer) updatePicker() {
